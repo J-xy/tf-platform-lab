@@ -90,3 +90,46 @@ resource "aws_dynamodb_table" "state_lock" {
     type = "S"
   }
 }
+
+# ---------------------------------------------------------------------------
+# 7. Lifecycle. Versioning is unbounded: every state write keeps the old
+#    object, and every lock cycle leaves a noncurrent .tflock version PLUS a
+#    delete marker. Two rules, because AWS will not let expired_object_delete_
+#    marker share an expiration block with day-based rules.
+#
+#    noncurrent_days + newer_noncurrent_versions are ANDed: a version is only
+#    expired once it is BOTH older than 30 days AND has 10 newer versions
+#    behind it. Deliberately conservative — these noncurrent versions are the
+#    recovery path from a corrupted state write, so expiring them aggressively
+#    would throw away the DR property that versioning exists to provide.
+# ---------------------------------------------------------------------------
+resource "aws_s3_bucket_lifecycle_configuration" "state" {
+  bucket = aws_s3_bucket.state.id
+
+  rule {
+    id     = "expire-noncurrent-versions"
+    status = "Enabled"
+
+    filter {} # empty = applies to every object in the bucket
+
+    noncurrent_version_expiration {
+      noncurrent_days           = 30
+      newer_noncurrent_versions = 10
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+
+  rule {
+    id     = "remove-expired-delete-markers"
+    status = "Enabled"
+
+    filter {}
+
+    expiration {
+      expired_object_delete_marker = true
+    }
+  }
+}
