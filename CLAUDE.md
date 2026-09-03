@@ -95,21 +95,21 @@ differ on purpose). Session expiry shows up as `token has expired`; fix with
 `terraform apply`'s approval prompt — use `-auto-approve` after showing the
 user a plan, and `init -migrate-state -force-copy` for migration.
 
-## Locking: both mechanisms are on
+## Locking: S3-native only
 
-`backend.tf` sets `dynamodb_table` AND `use_lockfile = true`, so every
-operation takes two locks with the same lock ID:
+`backend.tf` uses `use_lockfile = true` and nothing else. The lock is a
+conditional `PutObject` of `bootstrap/terraform.tfstate.tflock`; a second
+concurrent operation is refused with `S3: PutObject ... 412
+PreconditionFailed` and the error prints the holder's `Who`/`Created`.
 
-- `s3://<bucket>/bootstrap/terraform.tfstate.tflock` — 242-byte JSON, deleted
-  when the operation ends
-- a DynamoDB item keyed on the state path — also removed at the end
+`dynamodb_table` was dropped in 69fce94 — deprecated on 1.11+, and redundant
+once S3 gained conditional writes.
 
-`dynamodb_table` is deprecated on 1.11+ and emits a warning on every `init`.
-That warning is expected, not a problem to fix.
-
-The table also holds a **permanent** `<path>-md5` Digest item. It is not a
-lock — it is the state checksum, rewritten on each apply. A `scan` returning
-Count 1 between operations is healthy.
+**The DynamoDB table still exists and is still managed by `main.tf`, but
+nothing uses it.** It holds one orphaned `<path>-md5` digest item left over
+from when the backend was configured against it; Terraform will never touch
+that item again. Removing `aws_dynamodb_table.state_lock` from `main.tf` is
+safe whenever the user wants it — but it is a destroy, so ask first.
 
 ## Applying
 
