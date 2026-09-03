@@ -1,0 +1,30 @@
+# Local .terraform directories and plugin cache
+**/.terraform/*
+
+# State files — may contain secrets in plaintext. Never commit.
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Variable files often hold credentials / account IDs
+*.tfvars
+*.tfvars.json
+
+# CLI config and override files
+.terraformrc
+terraform.rc
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Saved plan output is a binary that can contain secrets
+*.tfplan
+
+# The dependency lock file SHOULD be committed — do not add .terraform.lock.hcl here.
+
+.DS_Store
