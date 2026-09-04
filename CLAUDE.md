@@ -72,6 +72,34 @@ and **this machine has none configured**: no `~/.aws/`, no `AWS_PROFILE` /
 fail at provider configuration until that is fixed. Don't reach for anything
 hitting the AWS API without checking with the user first.
 
+## Stage 3: ci/ (DONE)
+
+Applied 2026-09-04. GitHub OIDC federation — CI holds no static credentials.
+
+- Role `arn:aws:iam::964291633585:role/github-actions-terraform-plan`
+- **GitHub issues IMMUTABLE subject claims.** The real `sub` is
+  `repo:J-xy@68347443/tf-platform-lab@1355558109:pull_request`, embedding the
+  numeric owner and repo IDs — NOT the `repo:OWNER/NAME:context` form that most
+  documentation still shows. A policy written against the documented form is
+  rejected with `Not authorized to perform sts:AssumeRoleWithWebIdentity`,
+  which reads like a permissions problem and is a string mismatch. Trust is
+  scoped to two contexts only: `:pull_request` and `:ref:refs/heads/main`.
+- `thumbprint_list` is under `ignore_changes`. AWS backfills a thumbprint for
+  this provider whatever you send, so managing it is a permanent diff.
+- Permissions: managed `ReadOnlyAccess` plus a policy granting `s3:PutObject`
+  and `s3:DeleteObject` only on `*.tflock`. Plan keeps its lock; the role still
+  cannot write state.
+- The role ARN is hardcoded in `.github/workflows/terraform.yml` under
+  `env.AWS_ROLE_ARN`. If `ci/` is ever recreated, update it there too.
+
+**Ordering trap:** the workflow references the role by ARN, so `ci/` must be
+applied before the workflow ever runs, or CI fails at role assumption.
+
+The permission set needed `IAMFullAccess` for this stage. Note the asymmetry:
+`terraform plan` on `ci/` succeeded WITHOUT any IAM permissions, because every
+resource was a create and `aws_iam_policy_document` renders locally. Only
+`apply` needed them.
+
 ## Stage 2: network/ (DONE)
 
 Applied 2026-09-03. VPC `vpc-0cdc7c1483f0fad89`, `10.0.0.0/16`, us-east-1.

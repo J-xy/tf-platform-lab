@@ -1,0 +1,110 @@
+name: terraform
+
+# Runs on every PR, and on main after merge so a broken merge is caught even if
+# the PR was opened before the offending change landed.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Least privilege for the workflow token itself.
+#   id-token: write  -> REQUIRED to mint the OIDC token. Without it the AWS step
+#                       fails with "Credentials could not be loaded", which reads
+#                       like a role problem and is actually a permissions block.
+#   contents: read   -> checkout
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TF_VERSION: "1.15.8"
+  AWS_REGION: us-east-1
+  # Set by the ci/ stack. Output: ci_role_arn
+  AWS_ROLE_ARN: arn:aws:iam::964291633585:role/github-actions-terraform-plan
+
+jobs:
+  # Formatting needs no credentials, so it runs on its own and fails in seconds
+  # rather than after a role assumption that was never necessary.
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: terraform fmt -check
+        run: terraform fmt -check -recursive -diff
+
+  plan:
+    name: plan (${{ matrix.stack }})
+    runs-on: ubuntu-latest
+    needs: fmt
+    strategy:
+      # One failing stack should not hide the others' results.
+      fail-fast: false
+      matrix:
+        stack: [bootstrap, network, ci]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      # Exchanges the run's OIDC token for role credentials. No stored secrets:
+      # nothing here reads from GitHub secrets at all.
+      - name: Assume AWS role via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-${{ github.run_id }}
+
+      - name: terraform init
+        working-directory: ${{ matrix.stack }}
+        run: terraform init -input=false -no-color
+
+      - name: terraform validate
+        working-directory: ${{ matrix.stack }}
+        run: terraform validate -no-color
+
+      # -detailed-exitcode: 0 = no changes, 2 = changes present, 1 = error.
+      # A plan showing drift is information, not failure, so 2 is tolerated here
+      # and surfaced in the summary instead.
+      - name: terraform plan
+        id: plan
+        working-directory: ${{ matrix.stack }}
+        run: |
+          set +e
+          terraform plan -input=false -no-color -lock-timeout=60s -detailed-exitcode > plan.txt 2>&1
+          code=$?
+          set -e
+          echo "exitcode=$code" >> "$GITHUB_OUTPUT"
+          cat plan.txt
+          exit $([ $code -eq 1 ] && echo 1 || echo 0)
+
+      - name: Summarise plan
+        if: always()
+        working-directory: ${{ matrix.stack }}
+        run: |
+          {
+            case "${{ steps.plan.outputs.exitcode }}" in
+              0) echo "### \`${{ matrix.stack }}\` — no changes" ;;
+              2) echo "### \`${{ matrix.stack }}\` — changes detected" ;;
+              *) echo "### \`${{ matrix.stack }}\` — plan failed" ;;
+            esac
+            echo
+            echo '```terraform'
+            tail -c 60000 plan.txt || echo "(no plan output)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
