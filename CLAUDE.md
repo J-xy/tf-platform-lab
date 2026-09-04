@@ -77,9 +77,15 @@ hitting the AWS API without checking with the user first.
 Applied 2026-09-04. GitHub OIDC federation — CI holds no static credentials.
 
 - Role `arn:aws:iam::964291633585:role/github-actions-terraform-plan`
-- Trust is scoped to exactly two subjects: `repo:J-xy/tf-platform-lab:pull_request`
-  and `repo:J-xy/tf-platform-lab:ref:refs/heads/main`. Never widen this to
-  `repo:owner/name:*`.
+- **GitHub issues IMMUTABLE subject claims.** The real `sub` is
+  `repo:J-xy@68347443/tf-platform-lab@1355558109:pull_request`, embedding the
+  numeric owner and repo IDs — NOT the `repo:OWNER/NAME:context` form that most
+  documentation still shows. A policy written against the documented form is
+  rejected with `Not authorized to perform sts:AssumeRoleWithWebIdentity`,
+  which reads like a permissions problem and is a string mismatch. Trust is
+  scoped to two contexts only: `:pull_request` and `:ref:refs/heads/main`.
+- `thumbprint_list` is under `ignore_changes`. AWS backfills a thumbprint for
+  this provider whatever you send, so managing it is a permanent diff.
 - Permissions: managed `ReadOnlyAccess` plus a policy granting `s3:PutObject`
   and `s3:DeleteObject` only on `*.tflock`. Plan keeps its lock; the role still
   cannot write state.

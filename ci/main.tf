@@ -16,29 +16,50 @@
 #    what the official configure-aws-credentials action requests.
 # ---------------------------------------------------------------------------
 resource "aws_iam_openid_connect_provider" "github" {
-  url             = "https://token.actions.githubusercontent.com"
-  client_id_list  = ["sts.amazonaws.com"]
-  thumbprint_list = []
+  url            = "https://token.actions.githubusercontent.com"
+  client_id_list = ["sts.amazonaws.com"]
 
   tags = {
     Name = "github-actions"
+  }
+
+  lifecycle {
+    # AWS backfills a thumbprint for this well-known provider regardless of
+    # what is sent, so any value Terraform holds here produces a permanent
+    # diff. Left unmanaged deliberately: AWS validates this issuer's
+    # certificates natively, so the stored value is AWS's business, not ours.
+    ignore_changes = [thumbprint_list]
   }
 }
 
 # ---------------------------------------------------------------------------
 # 2. Trust policy — WHO may assume the role.
 #
-#    The `sub` claim is the security boundary and the place this is usually got
-#    wrong. A condition of "repo:owner/name:*" would let ANY ref in the repo
-#    assume this role, including a branch someone pushes. These two exact
-#    subjects are the only ones CI actually needs:
+#    The `sub` claim is the security boundary. GitHub issues IMMUTABLE subjects
+#    that embed the numeric owner and repository IDs — the format is
 #
-#      repo:owner/name:pull_request        -> a PR run
-#      repo:owner/name:ref:refs/heads/main -> a run on main after merge
+#      repo:OWNER@<owner_id>/NAME@<repo_id>:<context>
+#
+#    NOT the repo:OWNER/NAME:<context> shown in most documentation. A policy
+#    written against the documented form is rejected with
+#    "Not authorized to perform sts:AssumeRoleWithWebIdentity", which reads
+#    like a permissions problem rather than a string mismatch.
+#
+#    Pinning the IDs is stronger than pinning names: rename or transfer the
+#    repo and the IDs follow it, so whoever claims the freed-up name inherits
+#    nothing. Two contexts are allowed, and no others:
+#
+#      :pull_request        -> a PR run
+#      :ref:refs/heads/main -> a run on main after merge
 #
 #    The `aud` condition must also be present. Without it the role would trust
 #    tokens minted for a different audience entirely.
 # ---------------------------------------------------------------------------
+locals {
+  # repo:J-xy@68347443/tf-platform-lab@1355558109
+  repo_subject = "repo:${var.github_owner}@${var.github_owner_id}/${var.github_repo_name}@${var.github_repo_id}"
+}
+
 data "aws_iam_policy_document" "trust" {
   statement {
     effect  = "Allow"
@@ -59,8 +80,8 @@ data "aws_iam_policy_document" "trust" {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
       values = [
-        "repo:${var.github_repo}:pull_request",
-        "repo:${var.github_repo}:ref:refs/heads/main",
+        "${local.repo_subject}:pull_request",
+        "${local.repo_subject}:ref:refs/heads/main",
       ]
     }
   }
