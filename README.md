@@ -4,8 +4,8 @@ Building a Terraform platform workflow from an empty AWS account up to
 policy-gated CI — one stage at a time, with every non-obvious decision written
 down and defended rather than copied from a tutorial.
 
-**Stages 1 and 2 are complete and applied against real AWS infrastructure.**
-Stages 3–4 are planned and described below. The status table is honest; nothing here is
+**Stages 1–3 are complete and applied against real AWS infrastructure.**
+Stage 4 is planned and described below. The status table is honest; nothing here is
 claimed as built before it is.
 
 ---
@@ -16,7 +16,7 @@ claimed as built before it is.
 |-------|-------|----------------------|--------|
 | **1. Remote state backend** | S3 bucket + S3-native locking, applied with local state, then migrated into itself | Solving the bootstrap chicken-and-egg; state durability and locking as a designed property, not a default | ✅ **Done** |
 | **2. Network stack** | Two-AZ VPC, public/private tiers, second key in the same bucket | That the backend works as shared infrastructure — per-key locking, multiple states in one bucket | ✅ **Done** |
-| **3. CI gate** | `fmt` / `validate` / `plan` on every pull request | Terraform treated as reviewed code: no unplanned applies, no unformatted merges | Planned |
+| **3. CI gate** | `fmt` / `validate` / `plan` on every PR, authenticated by OIDC | Terraform treated as reviewed code, with CI holding no long-lived credentials | ✅ **Done** |
 | **4. Policy as code** | `tflint`, `checkov`, OPA blocking merge on violations | Guardrails enforced by machine at review time, not by convention in a wiki | Planned |
 
 Branch protection requiring a pull request is already enabled on `main`. It is
@@ -87,6 +87,57 @@ Two applies run concurrently — one against `bootstrap/`, one against `network/
 both completed with zero lock contention. Two applies against the *same* key
 collide with HTTP 412. The lock is per key, not per bucket, which is what makes
 one bucket safe to share across every stack in the lab.
+
+---
+
+## Stage 3 — what was actually built
+
+A GitHub Actions workflow that gates every pull request, and the AWS identity it
+uses. **No credentials are stored in GitHub.** Actions mints a short-lived OIDC
+token per run and trades it for an AWS role via `sts:AssumeRoleWithWebIdentity`,
+so there is no key to leak, rotate, or revoke.
+
+`ci/` — 5 IAM resources, free:
+
+| | |
+|---|---|
+| OIDC provider | `token.actions.githubusercontent.com`, audience `sts.amazonaws.com` |
+| Role | `github-actions-terraform-plan`, 1-hour max session |
+| Policies | AWS `ReadOnlyAccess` + a scoped state-access policy |
+
+`.github/workflows/terraform.yml` — two jobs:
+
+1. **`fmt`** — `terraform fmt -check -recursive`. No AWS credentials at all, so
+   a formatting failure costs seconds and never assumes a role.
+2. **`plan`** — a matrix across `bootstrap`, `network`, and `ci`, each running
+   `init` / `validate` / `plan`, with the result written to the job summary.
+
+**The trust policy is the security boundary.** It permits exactly two subjects:
+
+```
+repo:J-xy/tf-platform-lab:pull_request
+repo:J-xy/tf-platform-lab:ref:refs/heads/main
+```
+
+The common mistake is `repo:owner/name:*`, which lets *any* ref in the repo
+assume the role — including a branch anyone with write access pushes. The `aud`
+condition matters equally: without it the role would trust tokens minted for a
+different audience.
+
+**Read-only, except for locks.** A plan takes a state lock like any other
+operation — skip it with `-lock=false` and a plan running during an apply reads
+half-written state and reports a diff that never existed. So instead of
+disabling locking, the role's write grant is scoped by ARN suffix to
+`*.tflock`: it can create and delete lock objects and cannot touch a state file
+even by accident.
+
+**No `thumbprint_list`.** It was once required and had to be hand-updated
+whenever GitHub rotated its intermediate CA. AWS now validates this provider's
+certificates natively, so pinning one buys nothing and guarantees a future
+outage.
+
+Known limitation: pull requests from forks receive no OIDC token, so the plan
+job fails for outside contributors by design.
 
 ---
 
@@ -171,6 +222,10 @@ network/          Stage 2 — VPC, same bucket, key network/terraform.tfstate
   main.tf         VPC, subnets, IGW, route tables, associations
   variables.tf    vpc_cidr, az_count, name_prefix — with validation blocks
   outputs.tf      VPC and subnet handles for later stages
+ci/               Stage 3 — GitHub OIDC provider and the CI role
+  main.tf         OIDC provider, role, trust policy, scoped state access
+.github/workflows/
+  terraform.yml   fmt gate, then plan across all three stacks
 CLAUDE.md         Working notes and operational gotchas
 ```
 

@@ -72,6 +72,28 @@ and **this machine has none configured**: no `~/.aws/`, no `AWS_PROFILE` /
 fail at provider configuration until that is fixed. Don't reach for anything
 hitting the AWS API without checking with the user first.
 
+## Stage 3: ci/ (DONE)
+
+Applied 2026-09-04. GitHub OIDC federation — CI holds no static credentials.
+
+- Role `arn:aws:iam::964291633585:role/github-actions-terraform-plan`
+- Trust is scoped to exactly two subjects: `repo:J-xy/tf-platform-lab:pull_request`
+  and `repo:J-xy/tf-platform-lab:ref:refs/heads/main`. Never widen this to
+  `repo:owner/name:*`.
+- Permissions: managed `ReadOnlyAccess` plus a policy granting `s3:PutObject`
+  and `s3:DeleteObject` only on `*.tflock`. Plan keeps its lock; the role still
+  cannot write state.
+- The role ARN is hardcoded in `.github/workflows/terraform.yml` under
+  `env.AWS_ROLE_ARN`. If `ci/` is ever recreated, update it there too.
+
+**Ordering trap:** the workflow references the role by ARN, so `ci/` must be
+applied before the workflow ever runs, or CI fails at role assumption.
+
+The permission set needed `IAMFullAccess` for this stage. Note the asymmetry:
+`terraform plan` on `ci/` succeeded WITHOUT any IAM permissions, because every
+resource was a create and `aws_iam_policy_document` renders locally. Only
+`apply` needed them.
+
 ## Stage 2: network/ (DONE)
 
 Applied 2026-09-03. VPC `vpc-0cdc7c1483f0fad89`, `10.0.0.0/16`, us-east-1.
