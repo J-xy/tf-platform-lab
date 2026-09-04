@@ -43,6 +43,20 @@ jobs:
       - name: terraform fmt -check
         run: terraform fmt -check -recursive -diff
 
+  # TEMPORARY diagnostic. Prints only the sub/aud claims, never the token.
+  debug-oidc:
+    name: debug oidc claims
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decode OIDC claims
+        run: |
+          tok=$(curl -sS \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value)
+          pay=$(echo "$tok" | cut -d. -f2 | tr '_-' '/+')
+          case $(( ${#pay} % 4 )) in 2) pay="$pay==";; 3) pay="$pay=";; esac
+          echo "$pay" | base64 -d | jq '{sub, aud, repository, repository_owner, event_name, ref}'
+
   plan:
     name: plan (${{ matrix.stack }})
     runs-on: ubuntu-latest
