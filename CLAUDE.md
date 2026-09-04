@@ -72,7 +72,29 @@ and **this machine has none configured**: no `~/.aws/`, no `AWS_PROFILE` /
 fail at provider configuration until that is fixed. Don't reach for anything
 hitting the AWS API without checking with the user first.
 
-## Current status: bootstrap is DONE
+## Stage 2: network/ (DONE)
+
+Applied 2026-09-03. VPC `vpc-0cdc7c1483f0fad89`, `10.0.0.0/16`, us-east-1.
+State key `network/terraform.tfstate` in the Stage 1 bucket.
+
+- 13 resources: VPC, 2 public + 2 private subnets across us-east-1a/1b, IGW,
+  1 shared public route table, 1 private route table **per AZ**, 4 associations
+- No NAT gateway — private subnets have no egress, deliberately. Everything
+  here is free of hourly charges.
+- Subnets use `for_each` keyed by AZ name, so addresses are
+  `aws_subnet.public["us-east-1a"]`. Do not convert to `count`.
+- `data.aws_availability_zones` is filtered to `available`; AZs are never
+  hardcoded.
+
+**The permission set needed widening for this stage.** `s3-dynamoDB-Admin` had
+no EC2 access at all; `AmazonVPCFullAccess` was attached in the console. Any
+future stage touching a new service will hit the same wall — the symptom is
+`UnauthorizedOperation` on a Describe call, not a Terraform error.
+
+Verified: concurrent applies against `bootstrap/` and `network/` both exit 0
+with no lock contention, confirming the lock is per key, not per bucket.
+
+## Stage 1: bootstrap is DONE
 
 Both stages are complete as of 2026-09-02. State is remote.
 
