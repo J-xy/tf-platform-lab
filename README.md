@@ -1,11 +1,52 @@
 # tf-platform-lab
 
+[![terraform](https://github.com/J-xy/tf-platform-lab/actions/workflows/terraform.yml/badge.svg?branch=main)](https://github.com/J-xy/tf-platform-lab/actions/workflows/terraform.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 Building a Terraform platform workflow from an empty AWS account up to
 policy-gated CI — one stage at a time, with every non-obvious decision written
 down and defended rather than copied from a tutorial.
 
-**All four stages are complete and applied against real AWS infrastructure.** The status table is honest; nothing here is
-claimed as built before it is.
+**All four stages are complete and applied against real AWS infrastructure.**
+The status table is honest; nothing here is claimed as built before it is.
+
+Every pull request must pass `fmt`, `tflint`, Trivy, and a `terraform plan`
+against all three stacks before it can merge. `main` takes no direct pushes,
+including from the repository owner.
+
+---
+
+## What it looks like
+
+```mermaid
+flowchart TB
+    subgraph AWS["AWS account · us-east-1"]
+        subgraph S3["S3 bucket — versioned, AES256, public access blocked"]
+            K1["bootstrap/terraform.tfstate"]
+            K2["network/terraform.tfstate"]
+            K3["ci/terraform.tfstate"]
+        end
+        subgraph VPC["VPC 10.0.0.0/16"]
+            PUB["public subnets<br/>10.0.0.0/24 · 10.0.1.0/24<br/>route: 0.0.0.0/0 → IGW"]
+            PRV["private subnets<br/>10.0.128.0/24 · 10.0.129.0/24<br/>no default route — no NAT"]
+        end
+        ROLE["IAM role<br/>github-actions-terraform-plan<br/>read-only + *.tflock writes"]
+    end
+
+    PR["Pull request"] --> CI["GitHub Actions"]
+    CI -->|"OIDC token, no stored secret"| ROLE
+    ROLE -->|"read state · take lock"| S3
+    CI -.->|"plan"| VPC
+
+    style S3 fill:#0e7490,stroke:#0e7490,color:#fff
+    style ROLE fill:#4338ca,stroke:#4338ca,color:#fff
+    style PRV fill:#8a6108,stroke:#8a6108,color:#fff
+    style PUB fill:#0e7490,stroke:#0e7490,color:#fff
+```
+
+One bucket holds every stack's state under a separate key. The lock is a
+conditional `PutObject` on a per-key `.tflock` object, so two stacks never
+block each other — proven by running concurrent applies against two keys.
 
 ---
 
@@ -104,11 +145,28 @@ so there is no key to leak, rotate, or revoke.
 | Role | `github-actions-terraform-plan`, 1-hour max session |
 | Policies | AWS `ReadOnlyAccess` + a scoped state-access policy |
 
-`.github/workflows/terraform.yml` — two jobs:
+```mermaid
+sequenceDiagram
+    participant J as Actions job
+    participant G as GitHub OIDC issuer
+    participant S as AWS STS
+    participant B as S3 state
+
+    J->>G: request token (aud=sts.amazonaws.com)
+    G-->>J: JWT carrying the sub claim
+    J->>S: AssumeRoleWithWebIdentity(JWT)
+    Note over S: trust check<br/>aud == sts.amazonaws.com<br/>sub in {pull_request, refs/heads/main}
+    S-->>J: credentials, expire in 1 hour
+    J->>B: GetObject state · PutObject *.tflock
+    Note over J,B: no secret stored in GitHub at any point
+```
+
+`.github/workflows/terraform.yml` — three jobs:
 
 1. **`fmt`** — `terraform fmt -check -recursive`. No AWS credentials at all, so
    a formatting failure costs seconds and never assumes a role.
-2. **`plan`** — a matrix across `bootstrap`, `network`, and `ci`, each running
+2. **`policy`** — tflint and Trivy. Also credential-free (see Stage 4).
+3. **`plan`** — a matrix across `bootstrap`, `network`, and `ci`, each running
    `init` / `validate` / `plan`, with the result written to the job summary.
 
 **The trust policy is the security boundary.** It permits exactly two subjects:
