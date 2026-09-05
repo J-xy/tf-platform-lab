@@ -194,6 +194,19 @@ from when the backend was configured against it; Terraform will never touch
 that item again. Removing `aws_dynamodb_table.state_lock` from `main.tf` is
 safe whenever the user wants it — but it is a destroy, so ask first.
 
+## Teardown order
+
+Documented in the README. The order is not optional:
+
+1. `network/` and `ci/` first — their state lives in the bootstrap bucket.
+2. `bootstrap/`: remove `prevent_destroy`, add `force_destroy = true`, apply.
+3. Migrate state back to local (`mv backend.tf backend.tf.disabled` then
+   `init -migrate-state`) BEFORE destroying — otherwise the final state write
+   targets a bucket that no longer exists.
+4. `terraform destroy`.
+
+Identity Center, the local SSO profile, and branch protection are all manual.
+
 ## Applying
 
 Never run `terraform apply` or `destroy` without the user explicitly asking.
