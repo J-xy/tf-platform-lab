@@ -7,11 +7,6 @@ output "state_bucket_name" {
   value       = aws_s3_bucket.state.id
 }
 
-output "state_lock_table_name" {
-  description = "DynamoDB lock table. Goes in backend.tf as `dynamodb_table`."
-  value       = aws_dynamodb_table.state_lock.name
-}
-
 output "state_bucket_region" {
   description = "Region the bucket lives in. Goes in backend.tf as `region`."
   value       = data.aws_region.current.name

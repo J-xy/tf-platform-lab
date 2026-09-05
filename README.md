@@ -4,8 +4,7 @@ Building a Terraform platform workflow from an empty AWS account up to
 policy-gated CI — one stage at a time, with every non-obvious decision written
 down and defended rather than copied from a tutorial.
 
-**Stages 1–3 are complete and applied against real AWS infrastructure.**
-Stage 4 is planned and described below. The status table is honest; nothing here is
+**All four stages are complete and applied against real AWS infrastructure.** The status table is honest; nothing here is
 claimed as built before it is.
 
 ---
@@ -17,7 +16,7 @@ claimed as built before it is.
 | **1. Remote state backend** | S3 bucket + S3-native locking, applied with local state, then migrated into itself | Solving the bootstrap chicken-and-egg; state durability and locking as a designed property, not a default | ✅ **Done** |
 | **2. Network stack** | Two-AZ VPC, public/private tiers, second key in the same bucket | That the backend works as shared infrastructure — per-key locking, multiple states in one bucket | ✅ **Done** |
 | **3. CI gate** | `fmt` / `validate` / `plan` on every PR, authenticated by OIDC | Terraform treated as reviewed code, with CI holding no long-lived credentials | ✅ **Done** |
-| **4. Policy as code** | `tflint`, `checkov`, OPA blocking merge on violations | Guardrails enforced by machine at review time, not by convention in a wiki | Planned |
+| **4. Policy as code** | `tflint` + Trivy blocking merge on violations | Guardrails enforced by machine at review time — and the judgement to tell a real finding from a rule that does not fit | ✅ **Done** |
 
 Branch protection requiring a pull request is already enabled on `main`. It is
 overkill for a solo repo today, and it is deliberate: Stage 3's CI gate is only
@@ -138,6 +137,52 @@ outage.
 
 Known limitation: pull requests from forks receive no OIDC token, so the plan
 job fails for outside contributors by design.
+
+---
+
+## Stage 4 — what was actually built
+
+Two scanners in CI, in a job that needs no AWS credentials because they read
+HCL rather than live infrastructure:
+
+- **tflint** — Terraform and provider linting: deprecated syntax, invalid
+  arguments, wrong instance types. Clean across all three stacks.
+- **Trivy** (`config` scan) — security misconfiguration policy.
+
+**Not tfsec, and not checkov.** tfsec is in maintenance mode — Aqua's own
+README directs users to Trivy, which inherited its scanning engine. Checkov
+overlaps with Trivy by roughly 80%; running both is tool-collecting, not
+defence in depth.
+
+### The findings, and what was done with each
+
+The first scan returned three. None was fixed blindly:
+
+| Finding | Resolution |
+|---|---|
+| S3 not using customer-managed KMS keys | **Suppressed, with justification** |
+| DynamoDB point-in-time recovery disabled | **Fixed by deleting the table** |
+| VPC flow logs not enabled | **Deferred, with an expiry date** |
+
+**The KMS suppression is the point of this stage.** The rule is correct in
+general and wrong here: this is the bootstrap state bucket, so SSE-KMS would
+require `kms:Decrypt` for every principal running a plan and would make the key
+a dependency that must exist before any state does — a second bootstrap problem
+inside the first. That reasoning is written into `.trivyignore.yaml`, not
+buried in a commit message.
+
+**The DynamoDB finding was fixed by deletion, not hardening.** The lock table
+had been dead since `use_lockfile` replaced it in Stage 1. Enabling
+point-in-time recovery would have satisfied the scanner while paying to protect
+a table nothing reads. The scan is what finally surfaced infrastructure that
+had quietly outlived its purpose.
+
+**The flow logs deferral carries `expiredAt`.** Flow logs bill on ingested
+volume and this lab is deliberately at zero hourly cost — but the suppression
+expires, so the finding returns rather than becoming permanent.
+
+A clean scan usually means nobody scanned anything interesting. What matters is
+that every exception has a name on it and a reason a reviewer can argue with.
 
 ---
 
