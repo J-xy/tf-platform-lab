@@ -208,6 +208,19 @@ deliberately not a teardown script.
 - Falls back to a static 17-region list when `DescribeRegions` is denied.
   Without the fallback it would sweep one region and report clean.
 
+## Teardown order
+
+Documented in the README. The order is not optional:
+
+1. `network/` and `ci/` first — their state lives in the bootstrap bucket.
+2. `bootstrap/`: remove `prevent_destroy`, add `force_destroy = true`, apply.
+3. Migrate state back to local (`mv backend.tf backend.tf.disabled` then
+   `init -migrate-state`) BEFORE destroying — otherwise the final state write
+   targets a bucket that no longer exists.
+4. `terraform destroy`.
+
+Identity Center, the local SSO profile, and branch protection are all manual.
+
 ## Applying
 
 Never run `terraform apply` or `destroy` without the user explicitly asking.
