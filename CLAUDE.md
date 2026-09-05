@@ -72,6 +72,22 @@ and **this machine has none configured**: no `~/.aws/`, no `AWS_PROFILE` /
 fail at provider configuration until that is fixed. Don't reach for anything
 hitting the AWS API without checking with the user first.
 
+## Stage 4: policy scanning (DONE)
+
+- `policy` job in CI runs tflint + `trivy config`. No AWS credentials — the
+  scanners read HCL, so the job runs in parallel with plan.
+- Suppressions live in `.trivyignore.yaml`, each with a written justification.
+  Do NOT add an entry without a reason a reviewer could argue with; fix the
+  finding instead.
+  - `AVD-AWS-0132` (S3 without CMK) — permanent, deliberate SSE-S3 choice.
+  - `AVD-AWS-0178` (VPC flow logs) — deferred with `expiredAt: 2027-03-01`.
+- **tfsec is not used and should not be added.** It is in maintenance mode;
+  Aqua directs users to Trivy, which has the same engine. Checkov is also
+  deliberately absent — it overlaps Trivy heavily.
+- The DynamoDB lock table was DELETED in this stage. It had been dead since
+  `use_lockfile` replaced it. `bootstrap/outputs.tf` no longer exports
+  `state_lock_table_name`.
+
 ## Stage 3: ci/ (DONE)
 
 Applied 2026-09-04. GitHub OIDC federation — CI holds no static credentials.

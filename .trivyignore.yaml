@@ -1,0 +1,28 @@
+# Suppressions are decisions, not silencing. Each entry says what was weighed
+# and why the rule does not fit this context. Anything without a defensible
+# reason gets fixed instead of listed here.
+
+misconfigurations:
+  - id: AVD-AWS-0132
+    paths:
+      - "bootstrap/main.tf"
+    statement: >-
+      "S3 encryption should use Customer Managed Keys". Deliberate: this is the
+      bootstrap state bucket, and SSE-KMS would create two problems the rule
+      cannot see. Every principal running a plan would need kms:Decrypt on the
+      key, and the key itself becomes a dependency that must exist before any
+      state does - a second bootstrap problem inside the first. SSE-S3 gives
+      encryption at rest with no key policy to manage. Revisit if this bucket
+      ever holds state for accounts that need separate key custody or an audit
+      trail of decrypt calls.
+
+  - id: AVD-AWS-0178
+    paths:
+      - "network/main.tf"
+    statement: >-
+      "VPC Flow Logs should be enabled". A real gap, deferred rather than
+      dismissed. Flow logs need a CloudWatch log group or S3 destination and
+      bill on ingested volume, and this lab is deliberately at zero hourly
+      cost. The expiry below forces this back onto the list rather than
+      letting it rot as a permanent exception.
+    expiredAt: 2027-03-01

@@ -13,7 +13,6 @@ data "aws_region" "current" {}
 
 locals {
   state_bucket_name = "tf-state-${data.aws_caller_identity.current.account_id}-${data.aws_region.current.name}"
-  lock_table_name   = "tf-state-lock"
 }
 
 # ---------------------------------------------------------------------------
@@ -74,22 +73,14 @@ resource "aws_s3_bucket_public_access_block" "state" {
   restrict_public_buckets = true
 }
 
-# ---------------------------------------------------------------------------
-# 5. Lock table. hash_key names the partition key; the attribute block declares
-#    that key's type — two separate declarations that must agree. LockID is not
-#    a choice, it is what Terraform's S3 backend writes.
-#    PAY_PER_REQUEST: a lock table sees a handful of writes per apply.
-# ---------------------------------------------------------------------------
-resource "aws_dynamodb_table" "state_lock" {
-  name         = local.lock_table_name
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "LockID"
-
-  attribute {
-    name = "LockID"
-    type = "S"
-  }
-}
+# 5. The DynamoDB lock table was removed in Stage 4.
+#    It existed to provide state locking before S3 supported conditional
+#    writes. Once backend.tf moved to use_lockfile, nothing read it: the lock
+#    is a conditional PutObject of a <key>.tflock object, and a concurrent
+#    operation is refused with HTTP 412 by S3 itself. The table survived as
+#    dead infrastructure until a policy scan flagged it for lacking
+#    point-in-time recovery — the honest fix being deletion, not hardening a
+#    resource nothing uses.
 
 # ---------------------------------------------------------------------------
 # 7. Lifecycle. Versioning is unbounded: every state write keeps the old

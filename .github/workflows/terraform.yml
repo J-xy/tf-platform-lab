@@ -43,6 +43,43 @@ jobs:
       - name: terraform fmt -check
         run: terraform fmt -check -recursive -diff
 
+  # Linting and policy scanning. Like fmt, this needs no AWS credentials — the
+  # scanners read HCL, not live infrastructure — so it runs in parallel with
+  # plan rather than behind a role assumption it does not need.
+  policy:
+    name: policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: terraform-linters/setup-tflint@v6.3.1
+        with:
+          tflint_version: v0.64.0
+
+      # The AWS ruleset is downloaded from GitHub; the token avoids being rate
+      # limited on shared runners.
+      - name: tflint --init
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: tflint --init
+
+      - name: tflint
+        run: tflint --recursive --format compact
+
+      # Suppressions live in .trivyignore.yaml, each with a written
+      # justification. A finding without a defensible reason gets fixed
+      # instead of listed there.
+      # trivyignores, NOT ignore-file — the action has no input by that name and
+      # would silently scan with no suppressions at all.
+      - name: trivy config
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          trivyignores: .trivyignore.yaml
+          severity: CRITICAL,HIGH,MEDIUM
+          exit-code: "1"
+
   plan:
     name: plan (${{ matrix.stack }})
     runs-on: ubuntu-latest
