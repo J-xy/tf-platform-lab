@@ -390,6 +390,77 @@ short-lived, expiring, nothing static written to disk.
 
 ---
 
+## Tearing it down
+
+Order matters, and the last stack fights back on purpose. `bootstrap/` holds the
+state for everything else and carries `prevent_destroy`, so a naive
+`terraform destroy` at the top level fails — by design, since that bucket is the
+only record of what exists.
+
+**1. Destroy the dependent stacks first.** Their state lives in the bootstrap
+bucket, which must still exist while they are torn down.
+
+```bash
+terraform -chdir=network destroy
+terraform -chdir=ci destroy      # removes the CI role — CI stops working from here
+```
+
+**2. Disarm the bootstrap bucket.** Two edits to `bootstrap/main.tf`, then apply
+so the change reaches state:
+
+```hcl
+resource "aws_s3_bucket" "state" {
+  bucket        = local.state_bucket_name
+  force_destroy = true          # add: the bucket holds state objects and their
+                                # versions, and DeleteBucket fails on a bucket
+                                # that is not empty
+
+  lifecycle {
+    # prevent_destroy = true    # remove: this is what refuses the destroy
+  }
+}
+```
+
+```bash
+terraform -chdir=bootstrap apply
+```
+
+**3. Bring state back to local before deleting the bucket it lives in.** This is
+the step people miss. Destroying the bucket while Terraform's state is inside it
+means the final state write goes to a bucket that no longer exists.
+
+```bash
+mv bootstrap/backend.tf bootstrap/backend.tf.disabled
+terraform -chdir=bootstrap init -migrate-state    # answer yes; copies S3 -> local
+```
+
+**4. Now destroy it.**
+
+```bash
+terraform -chdir=bootstrap destroy
+```
+
+`force_destroy` empties the bucket first, including every noncurrent version and
+delete marker the lifecycle rules had not yet expired.
+
+### What Terraform does not clean up
+
+These were created by hand and have to be removed by hand:
+
+| Thing | Where |
+|---|---|
+| IAM Identity Center instance, user, permission set | IAM Identity Center console |
+| The `~/.aws/config` SSO profile | Local machine |
+| Branch protection and required checks | Repository settings |
+
+### If you would rather not
+
+Leaving the lab running costs approximately nothing — an S3 bucket holding a few
+KB and an IAM role. There is no NAT gateway, no EC2, no load balancer, nothing
+billed by the hour. The reason to tear it down is tidiness, not cost.
+
+---
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
