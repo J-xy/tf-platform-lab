@@ -52,7 +52,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: terraform-linters/setup-tflint@v4
+      - uses: terraform-linters/setup-tflint@v6.3.1
         with:
           tflint_version: v0.64.0
 
@@ -69,13 +69,14 @@ jobs:
       # Suppressions live in .trivyignore.yaml, each with a written
       # justification. A finding without a defensible reason gets fixed
       # instead of listed there.
+      # trivyignores, NOT ignore-file — the action has no input by that name and
+      # would silently scan with no suppressions at all.
       - name: trivy config
-        uses: aquasecurity/trivy-action@0.30.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: config
           scan-ref: .
-          trivy-config: ""
-          ignore-file: .trivyignore.yaml
+          trivyignores: .trivyignore.yaml
           severity: CRITICAL,HIGH,MEDIUM
           exit-code: "1"
 
