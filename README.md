@@ -7,7 +7,7 @@ Building a Terraform platform workflow from an empty AWS account up to
 policy-gated CI — one stage at a time, with every non-obvious decision written
 down and defended rather than copied from a tutorial.
 
-**All four stages are complete and applied against real AWS infrastructure.**
+**All five stages are complete and applied against real AWS infrastructure.**
 The status table is honest; nothing here is claimed as built before it is.
 
 Every pull request must pass `fmt`, `tflint`, Trivy, and a `terraform plan`
@@ -50,7 +50,7 @@ block each other — proven by running concurrent applies against two keys.
 
 ---
 
-## The four stages
+## The five stages
 
 | Stage | Scope | What it demonstrates | Status |
 |-------|-------|----------------------|--------|
@@ -58,6 +58,7 @@ block each other — proven by running concurrent applies against two keys.
 | **2. Network stack** | Two-AZ VPC, public/private tiers, second key in the same bucket | That the backend works as shared infrastructure — per-key locking, multiple states in one bucket | ✅ **Done** |
 | **3. CI gate** | `fmt` / `validate` / `plan` on every PR, authenticated by OIDC | Terraform treated as reviewed code, with CI holding no long-lived credentials | ✅ **Done** |
 | **4. Policy as code** | `tflint` + Trivy blocking merge on violations | Guardrails enforced by machine at review time — and the judgement to tell a real finding from a rule that does not fit | ✅ **Done** |
+| **5. Drift detection** | Scheduled `plan` against real infrastructure, raising an issue on divergence | That the gate has a blind spot: reviews catch what arrives through PRs, nothing catches the console | ✅ **Done** |
 
 Branch protection requiring a pull request is already enabled on `main`. It is
 overkill for a solo repo today, and it is deliberate: Stage 3's CI gate is only
@@ -241,6 +242,49 @@ expires, so the finding returns rather than becoming permanent.
 
 A clean scan usually means nobody scanned anything interesting. What matters is
 that every exception has a name on it and a reason a reviewer can argue with.
+
+---
+
+## Stage 5 — what was actually built
+
+Stages 3 and 4 gate what arrives through pull requests. **Neither sees a change
+made in the console**, by another tool, or by someone working around the
+process at 2am. That is the blind spot this closes.
+
+`.github/workflows/drift.yml` runs daily and on demand:
+
+- `terraform plan -detailed-exitcode` across all three stacks — exit `0` means
+  reality matches, `2` means it does not, `1` is a genuine error, and the three
+  are handled differently
+- Every stack is checked even after one drifts, so the report is complete
+  rather than stopping at the first difference
+- On divergence it opens an issue labelled `drift`, with each stack's plan
+  output in a collapsible block
+- **One issue, reused.** Subsequent runs comment rather than opening a new
+  issue — a fresh issue per day buries the signal within a week, which is how
+  drift alerting usually dies
+- **It closes the issue when the drift is resolved.** An alert that never
+  clears is an alert people learn to ignore
+
+No IAM change was needed. A scheduled run's OIDC subject is
+`ref:refs/heads/main`, which the Stage 3 trust policy already permits, and
+`plan` needs no permission the role does not already hold.
+
+### Verified by causing real drift
+
+The mechanism was tested by changing infrastructure out of band — adding a tag
+to the VPC with the AWS CLI, exactly as someone would in the console:
+
+```
+$ aws ec2 create-tags --resources vpc-… --tags Key=drift-test,Value=changed-in-console
+$ terraform -chdir=network plan -detailed-exitcode
+  # aws_vpc.main will be updated in-place
+      ~ tags = { - "drift-test" = "changed-in-console" -> null }
+  exit code: 2
+```
+
+Then reverted with `apply`, returning the exit code to `0`. A drift detector
+that has never seen drift is an untested assumption.
 
 ---
 

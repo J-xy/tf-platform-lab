@@ -1,0 +1,156 @@
+name: drift
+
+# Stage 3's gate catches changes that arrive through pull requests. Nothing
+# catches a change made in the console, by another tool, or by a person in a
+# hurry. This runs plan on a schedule against real infrastructure and raises an
+# issue when committed config and reality have diverged.
+on:
+  schedule:
+    # 07:00 UTC daily. Deliberately not on the hour — scheduled workflows queue
+    # behind everyone else's :00 cron and can be delayed for many minutes.
+    - cron: "13 7 * * *"
+  # So the check can be run on demand rather than waiting for tomorrow.
+  workflow_dispatch:
+
+permissions:
+  id-token: write # mint the OIDC token
+  contents: read # checkout
+  issues: write # raise the drift report
+
+concurrency:
+  group: drift
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: "1.15.8"
+  AWS_REGION: us-east-1
+  AWS_ROLE_ARN: arn:aws:iam::964291633585:role/github-actions-terraform-plan
+  # A scheduled run's OIDC subject is ref:refs/heads/main, which the role's
+  # trust policy already allows. No IAM change was needed for this workflow.
+
+jobs:
+  detect:
+    name: detect drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Assume AWS role via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: drift-${{ github.run_id }}
+
+      # -detailed-exitcode: 0 = matches, 1 = error, 2 = drift.
+      # Every stack is checked even after one drifts, so the report is complete
+      # rather than stopping at the first difference.
+      - name: terraform plan
+        id: detect
+        run: |
+          drifted=""
+          failed=""
+          : > report.md
+          for stack in bootstrap network ci; do
+            terraform -chdir=$stack init -input=false -no-color > /dev/null
+            set +e
+            terraform -chdir=$stack plan -input=false -no-color -lock-timeout=90s \
+              -detailed-exitcode > "$stack.txt" 2>&1
+            code=$?
+            set -e
+            case $code in
+              0) echo "  $stack: no drift" ;;
+              2) echo "::warning::$stack has drifted"
+                 drifted="$drifted $stack"
+                 {
+                   echo "<details><summary><code>$stack</code> — drift detected</summary>"
+                   echo
+                   echo '```terraform'
+                   tail -c 20000 "$stack.txt"
+                   echo '```'
+                   echo "</details>"
+                   echo
+                 } >> report.md ;;
+              *) echo "::error::$stack failed to plan"
+                 failed="$failed $stack"
+                 {
+                   echo "<details><summary><code>$stack</code> — plan FAILED</summary>"
+                   echo
+                   echo '```'
+                   tail -c 8000 "$stack.txt"
+                   echo '```'
+                   echo "</details>"
+                   echo
+                 } >> report.md ;;
+            esac
+          done
+          echo "drifted=${drifted# }" >> "$GITHUB_OUTPUT"
+          echo "failed=${failed# }"   >> "$GITHUB_OUTPUT"
+
+      # One issue, reused. A new issue per day would bury the signal within a
+      # week, which is how drift alerting usually dies.
+      - name: Raise or update the drift issue
+        if: steps.detect.outputs.drifted != '' || steps.detect.outputs.failed != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRIFTED: ${{ steps.detect.outputs.drifted }}
+          FAILED: ${{ steps.detect.outputs.failed }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo "Committed configuration and deployed infrastructure have diverged."
+            echo
+            [ -n "$DRIFTED" ] && echo "**Drifted:** \`$DRIFTED\`"
+            [ -n "$FAILED" ]  && echo "**Failed to plan:** \`$FAILED\`"
+            echo
+            cat report.md
+            echo "Detected by [this run]($RUN_URL) at $(date -u '+%Y-%m-%d %H:%M UTC')."
+            echo
+            echo "Resolve by either applying the committed config, or by changing"
+            echo "the config to match a deliberate out-of-band change. Do not"
+            echo "close this issue without doing one of the two."
+          } > body.md
+
+          existing=$(gh issue list --label drift --state open \
+            --json number --jq '.[0].number // empty')
+
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file body.md
+            echo "commented on existing issue #$existing"
+          else
+            gh label create drift --color B60205 \
+              --description "Infrastructure differs from committed config" 2>/dev/null || true
+            gh issue create --title "Infrastructure drift detected" \
+              --label drift --body-file body.md
+          fi
+
+      # Closes the loop: without this the issue stays open after the drift is
+      # resolved, and a permanently open alert is an ignored alert.
+      - name: Close the drift issue when everything matches
+        if: steps.detect.outputs.drifted == '' && steps.detect.outputs.failed == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for n in $(gh issue list --label drift --state open --json number --jq '.[].number'); do
+            gh issue comment "$n" --body "All stacks now match committed configuration. Closing automatically."
+            gh issue close "$n"
+            echo "closed #$n"
+          done
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            if [ -n "${{ steps.detect.outputs.drifted }}${{ steps.detect.outputs.failed }}" ]; then
+              echo "### Drift detected"
+              echo
+              cat report.md
+            else
+              echo "### No drift — all three stacks match committed configuration"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

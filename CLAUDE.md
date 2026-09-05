@@ -72,6 +72,23 @@ and **this machine has none configured**: no `~/.aws/`, no `AWS_PROFILE` /
 fail at provider configuration until that is fixed. Don't reach for anything
 hitting the AWS API without checking with the user first.
 
+## Stage 5: drift detection (DONE)
+
+`.github/workflows/drift.yml` — daily cron plus `workflow_dispatch`.
+
+- Runs `plan -detailed-exitcode` on all three stacks. 0 = match, 2 = drift,
+  1 = error; all three are handled separately. Every stack is checked even
+  after one drifts.
+- Maintains ONE issue labelled `drift`: comments on the existing open issue
+  rather than opening new ones, and closes it when everything matches again.
+  Do not "simplify" this into create-every-run — a new issue per day is how
+  drift alerting gets ignored.
+- Needs `issues: write` on top of the usual `id-token: write` / `contents: read`.
+- No IAM change: a scheduled run's OIDC sub is `ref:refs/heads/main`, already
+  allowed by the Stage 3 trust policy.
+- Verified by creating real drift (a stray tag on the VPC via AWS CLI),
+  confirming exit code 2, then reverting with apply.
+
 ## Stage 4: policy scanning (DONE)
 
 - `policy` job in CI runs tflint + `trivy config`. No AWS credentials — the
