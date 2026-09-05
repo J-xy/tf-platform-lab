@@ -194,6 +194,20 @@ from when the backend was configured against it; Terraform will never touch
 that item again. Removing `aws_dynamodb_table.state_lock` from `main.tf` is
 safe whenever the user wants it — but it is a destroy, so ask first.
 
+## Cost sentinel
+
+`scripts/cost-sentinel.sh` + `.github/workflows/cost-sentinel.yml`. Read-only
+sweep of every region for hourly-billing resources. Deletes NOTHING — it is
+deliberately not a teardown script.
+
+- Works fully in CI (the Stage 3 role has `ReadOnlyAccess`) but partially fails
+  locally: the human SSO permission set lacks `ec2:DescribeRegions`,
+  `elasticloadbalancing:*` and `rds:*`. Expected, not a bug.
+- Permission denials are reported as UNKNOWN and the script refuses to say
+  "clean". Do not simplify that away.
+- Falls back to a static 17-region list when `DescribeRegions` is denied.
+  Without the fallback it would sweep one region and report clean.
+
 ## Applying
 
 Never run `terraform apply` or `destroy` without the user explicitly asking.

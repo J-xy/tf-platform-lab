@@ -390,6 +390,45 @@ short-lived, expiring, nothing static written to disk.
 
 ---
 
+## Not getting charged
+
+Teardown is the wrong tool for this. It removes what you already know about, in
+the region you thought to look at — but a surprise bill comes from the resource
+you forgot, somewhere you did not check.
+
+`scripts/cost-sentinel.sh` sweeps **every** region for resources that bill by
+the hour, and deletes nothing:
+
+| Checked | Rough cost |
+|---|---|
+| NAT gateways | $32/mo each |
+| Running EC2 instances | $8–250/mo each |
+| Elastic IPs | $3.60/mo each |
+| Load balancers | $16–22/mo each |
+| RDS instances | $13–200/mo each |
+| Unattached EBS volumes | $0.08/GB/mo |
+| VPC interface endpoints | $7/mo each |
+| EKS clusters | $73/mo each |
+
+```bash
+./scripts/cost-sentinel.sh     # exit 1 if anything billable exists
+```
+
+It also runs daily as `.github/workflows/cost-sentinel.yml`, opening an issue
+labelled `cost` when it finds something and closing it once the account is clean.
+
+**A denial is reported as unknown, never as clean.** Run it as a human and
+several checks fail: the SSO permission set is deliberately narrower than the CI
+role, which carries `ReadOnlyAccess`. A sweep that silently skipped what it
+could not see would be worse than no sweep, so it names the checks that did not
+run and refuses to call the account clean.
+
+None of this replaces a **budget alert** — Billing → Budgets → Create budget.
+The sentinel finds what exists; a budget catches everything, including what
+neither the script nor Terraform knows about.
+
+---
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
