@@ -1,0 +1,104 @@
+name: cost-sentinel
+
+# Finds resources that bill by the hour, in every region — including ones
+# Terraform never created and nobody remembers making. Deletes nothing.
+#
+# This exists because a teardown script solves the wrong problem: it removes
+# what you already know about, in the region you thought to look at. Surprise
+# bills come from the resource you forgot, somewhere you didn't check.
+on:
+  schedule:
+    # 07:41 UTC daily, offset from the drift job so the two do not contend for
+    # the same runner minute.
+    - cron: "41 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+  issues: write
+
+concurrency:
+  group: cost-sentinel
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  # The Stage 3 role already carries the managed ReadOnlyAccess policy, which
+  # covers every Describe call this sweep makes. No new IAM was needed — and
+  # notably this works in CI while failing locally, because the human SSO
+  # permission set is narrower than the CI role.
+  AWS_ROLE_ARN: arn:aws:iam::964291633585:role/github-actions-terraform-plan
+
+jobs:
+  sweep:
+    name: sweep all regions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assume AWS role via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: cost-sentinel-${{ github.run_id }}
+
+      - name: Sweep
+        id: sweep
+        run: |
+          set +e
+          ./scripts/cost-sentinel.sh > report.txt 2>&1
+          echo "found=$?" >> "$GITHUB_OUTPUT"
+          set -e
+          cat report.txt
+
+      # One issue, reused — same reasoning as the drift job. A new issue per day
+      # trains you to ignore the label.
+      - name: Raise or update the cost issue
+        if: steps.sweep.outputs.found == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo "Resources that bill by the hour were found in this account."
+            echo
+            echo '```'
+            cat report.txt
+            echo '```'
+            echo
+            echo "Found by [this run]($RUN_URL) at $(date -u '+%Y-%m-%d %H:%M UTC')."
+            echo
+            echo "If these are deliberate, close this issue. If not, they are"
+            echo "costing money right now."
+          } > body.md
+
+          existing=$(gh issue list --label cost --state open --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file body.md
+          else
+            gh label create cost --color D93F0B \
+              --description "Billable AWS resources detected" 2>/dev/null || true
+            gh issue create --title "Billable AWS resources detected" \
+              --label cost --body-file body.md
+          fi
+
+      - name: Close the cost issue when the account is clean
+        if: steps.sweep.outputs.found == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for n in $(gh issue list --label cost --state open --json number --jq '.[].number'); do
+            gh issue comment "$n" --body "No hourly-billing resources found. Closing automatically."
+            gh issue close "$n"
+          done
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo '```'
+            cat report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
