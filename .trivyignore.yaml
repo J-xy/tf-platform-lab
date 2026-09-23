@@ -18,7 +18,7 @@ misconfigurations:
 
   - id: AVD-AWS-0178
     paths:
-      - "network/main.tf"
+      - "modules/baseline-vpc/main.tf"
     statement: >-
       "VPC Flow Logs should be enabled". A real gap, deferred rather than
       dismissed. Flow logs need a CloudWatch log group or S3 destination and
