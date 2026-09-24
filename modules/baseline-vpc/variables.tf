@@ -39,7 +39,9 @@ variable "tags" {
   default     = {}
 }
 
-# TODO: not yet wired into main.tf. NAT gateway creation is a later stage.
+# Placeholder for a later stage; NAT gateway creation is not yet implemented
+# in main.tf, so the variable is intentionally unused for now.
+# tflint-ignore: terraform_unused_declarations
 variable "enable_nat" {
   description = "Whether to provision a NAT gateway for private subnet egress. Defaults to false — NAT costs ~$0.045/hr plus per-GB processing, so it must be an explicit opt-in."
   type        = bool
