@@ -19,6 +19,9 @@ misconfigurations:
   - id: AVD-AWS-0178
     paths:
       - "modules/baseline-vpc/main.tf"
+      # Same file reached through a git source (envs/*), which Trivy reports
+      # under the remote path: git::https:/github.com/.../baseline-vpc?ref=vX/...
+      - "**/modules/baseline-vpc/main.tf"
     statement: >-
       "VPC Flow Logs should be enabled". A real gap, deferred rather than
       dismissed. Flow logs need a CloudWatch log group or S3 destination and
