@@ -1,3 +1,45 @@
+## What Stage 2 proves
+
+*(your two sentences here)*
+
+## Architecture
+
+```mermaid
+graph TD
+  VPC["aws_vpc.this (var.vpc_cidr)"]
+  IGW["aws_internet_gateway.this"]
+  VPC --> IGW
+  subgraph "Public (×az_count)"
+    PubSN["aws_subnet.public[n]"]
+    PubRT["aws_route_table.public"]
+  end
+  subgraph "Private (×az_count)"
+    PrivSN["aws_subnet.private[n]"]
+    PrivRT["aws_route_table.private"]
+  end
+  VPC --> PubSN
+  VPC --> PrivSN
+  PubRT -->|0.0.0.0/0| IGW
+  PubSN --> PubRT
+  PrivSN --> PrivRT
+```
+
+## How to consume
+
+```hcl
+module "vpc" {
+  source = "git::https://github.com/<your-org>/<your-repo>.git//modules/baseline-vpc?ref=v0.1.0"
+
+  name_prefix = "myapp-dev"
+  vpc_cidr    = "10.1.0.0/16"
+  az_count    = 2
+  enable_nat  = false
+  tags = {
+    Environment = "dev"
+  }
+}
+```
+
 <!-- BEGIN_TF_DOCS -->
 ## Requirements
 
