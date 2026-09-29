@@ -72,6 +72,27 @@ and **this machine has none configured**: no `~/.aws/`, no `AWS_PROFILE` /
 fail at provider configuration until that is fixed. Don't reach for anything
 hitting the AWS API without checking with the user first.
 
+## Stage 6: apply role (applied locally 2026-09-29)
+
+- `ci/tf_apply.tf`: role `github-actions-terraform-apply`. Trusts ONLY
+  `<repo_subject>:environment:prod`. The subject has no branch in it; the
+  GitHub `prod` environment (main only, required reviewer) is part of the
+  control. Scoped policy `tf-platform-lab-ci-apply`, no AdministratorAccess.
+- Accepted risk: the role can `CreatePolicy tf-platform-lab-*` with any content
+  and attach it — the allow-list blocks admin by name, not by effect.
+- Plan role is on `job-function/ViewOnlyAccess` + `tf-platform-lab-ci-plan-reads`
+  (S3 bucket-config + IAM Get, project ARNs only). **ViewOnlyAccess lives under
+  `job-function/`** — `arn:aws:iam::aws:policy/ViewOnlyAccess` does not exist.
+- `apply` job in `terraform.yml`: push to main only, `environment: prod`, own
+  non-cancelling concurrency group, stacks one at a time.
+
+**State loss, 2026-09-05.** Every object version in the state bucket older than
+2026-09-06 was permanently deleted (no delete markers), and the root user
+deleted the Stage 2 VPC in the console the same day. Most likely a console
+"Empty bucket". `bootstrap/` and `ci/` state were rebuilt with `import` blocks;
+`network/` was re-applied. Never use the console "Empty" action on the state
+bucket — versioning does not protect against it.
+
 ## Stage 5: drift detection (DONE)
 
 `.github/workflows/drift.yml` — daily cron plus `workflow_dispatch`.
@@ -119,7 +140,8 @@ Applied 2026-09-04. GitHub OIDC federation — CI holds no static credentials.
   scoped to two contexts only: `:pull_request` and `:ref:refs/heads/main`.
 - `thumbprint_list` is under `ignore_changes`. AWS backfills a thumbprint for
   this provider whatever you send, so managing it is a permanent diff.
-- Permissions: managed `ReadOnlyAccess` plus a policy granting `s3:PutObject`
+- Permissions (superseded in Stage 6 — now `ViewOnlyAccess` + `plan-reads`):
+  managed `ReadOnlyAccess` plus a policy granting `s3:PutObject`
   and `s3:DeleteObject` only on `*.tflock`. Plan keeps its lock; the role still
   cannot write state.
 - The role ARN is hardcoded in `.github/workflows/terraform.yml` under
@@ -135,7 +157,8 @@ resource was a create and `aws_iam_policy_document` renders locally. Only
 
 ## Stage 2: network/ (DONE)
 
-Applied 2026-09-03. VPC `vpc-0cdc7c1483f0fad89`, `10.0.0.0/16`, us-east-1.
+Applied 2026-09-03; recreated 2026-09-29 after the state loss (see Stage 6).
+VPC `vpc-0501166b7510f2466`, `10.0.0.0/16`, us-east-1.
 State key `network/terraform.tfstate` in the Stage 1 bucket.
 
 - 13 resources: VPC, 2 public + 2 private subnets across us-east-1a/1b, IGW,

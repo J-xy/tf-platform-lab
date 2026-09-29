@@ -100,7 +100,9 @@ resource "aws_iam_role" "ci_plan" {
 # ---------------------------------------------------------------------------
 # 3. What the role may DO.
 #
-#    Reading resources is covered by the AWS-managed ReadOnlyAccess policy.
+#    Reading resources is covered by the AWS-managed ViewOnlyAccess policy plus
+#    plan_reads below. NOT ReadOnlyAccess: that grants data reads such as
+#    s3:GetObject on every bucket in the account, which plan never needs.
 #    That leaves one thing plan needs that is not read-only: the state lock.
 #
 #    A plan takes a lock like any other operation — without it, a plan run
@@ -144,7 +146,45 @@ resource "aws_iam_role_policy_attachment" "state_access" {
   policy_arn = aws_iam_policy.state_access.arn
 }
 
-resource "aws_iam_role_policy_attachment" "read_only" {
+# ViewOnlyAccess reads metadata (Describe*/List*) but not configuration
+# documents. plan_reads adds only the Get* calls a refresh of these three
+# stacks makes that ViewOnlyAccess does not cover, each scoped to this
+# project's ARNs rather than the account.
+data "aws_iam_policy_document" "plan_reads" {
+  # bootstrap: aws_s3_bucket and its sub-resources read every bucket setting on refresh; ViewOnlyAccess has none of them.
+  statement {
+    sid    = "StateBucketConfigRead"
+    effect = "Allow"
+    actions = [
+      "s3:GetBucketAcl", "s3:GetBucketCORS", "s3:GetBucketLogging", "s3:GetBucketObjectLockConfiguration",
+      "s3:GetBucketPolicy", "s3:GetBucketPublicAccessBlock", "s3:GetBucketRequestPayment", "s3:GetBucketTagging",
+      "s3:GetBucketVersioning", "s3:GetBucketWebsite", "s3:GetAccelerateConfiguration",
+      "s3:GetEncryptionConfiguration", "s3:GetLifecycleConfiguration", "s3:GetReplicationConfiguration",
+    ]
+    resources = [local.bucket_arn]
+  }
+
+  # ci: ViewOnlyAccess can list IAM but not Get a role, a policy document or the OIDC provider.
+  statement {
+    sid       = "CiIamRead"
+    effect    = "Allow"
+    actions   = ["iam:GetRole", "iam:GetPolicy", "iam:GetPolicyVersion", "iam:GetOpenIDConnectProvider"]
+    resources = [local.role_prefix, local.policy_pfx, local.oidc_arn]
+  }
+}
+
+resource "aws_iam_policy" "plan_reads" {
+  name        = "tf-platform-lab-ci-plan-reads"
+  description = "Config reads plan needs that ViewOnlyAccess lacks, scoped to this project."
+  policy      = data.aws_iam_policy_document.plan_reads.json
+}
+
+resource "aws_iam_role_policy_attachment" "plan_reads" {
   role       = aws_iam_role.ci_plan.name
-  policy_arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
+  policy_arn = aws_iam_policy.plan_reads.arn
+}
+
+resource "aws_iam_role_policy_attachment" "view_only" {
+  role       = aws_iam_role.ci_plan.name
+  policy_arn = "arn:aws:iam::aws:policy/job-function/ViewOnlyAccess"
 }
