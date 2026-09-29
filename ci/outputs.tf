@@ -7,3 +7,8 @@ output "oidc_provider_arn" {
   description = "The GitHub OIDC identity provider registered in this account."
   value       = aws_iam_openid_connect_provider.github.arn
 }
+
+output "ci_apply_role_arn" {
+  description = "Role the apply job assumes. Goes in terraform.yml's apply job."
+  value       = aws_iam_role.ci_apply.arn
+}

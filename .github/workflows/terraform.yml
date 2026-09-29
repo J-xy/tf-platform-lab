@@ -145,3 +145,53 @@ jobs:
             tail -c 60000 plan.txt || echo "(no plan output)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Apply runs only after merge, and only once a reviewer approves the prod
+  # environment. `environment: prod` is what changes the OIDC subject to
+  # :environment:prod — the only subject the apply role trusts, and one the
+  # plan role never accepts.
+  apply:
+    name: apply (${{ matrix.stack }})
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: [plan, policy]
+    environment: prod
+    permissions:
+      id-token: write
+      contents: read
+    # Own group, never cancelled. The workflow-level group cancels in-progress
+    # runs, which would kill an apply half-way and leave state locked.
+    concurrency:
+      group: terraform-apply
+      cancel-in-progress: false
+    strategy:
+      # One stack at a time, in dependency order: bootstrap holds the others'
+      # state, so a failure there should stop the rest.
+      max-parallel: 1
+      fail-fast: true
+      matrix:
+        stack: [bootstrap, network, ci]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Assume AWS apply role via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # ci/ output: ci_apply_role_arn. Not the plan role.
+          role-to-assume: arn:aws:iam::964291633585:role/github-actions-terraform-apply
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-apply-${{ github.run_id }}
+
+      - name: terraform init
+        working-directory: ${{ matrix.stack }}
+        run: terraform init -input=false -no-color
+
+      - name: terraform apply
+        working-directory: ${{ matrix.stack }}
+        run: terraform apply -input=false -no-color -lock-timeout=120s -auto-approve
