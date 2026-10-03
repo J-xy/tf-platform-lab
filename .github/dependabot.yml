@@ -1,0 +1,14 @@
+version: 2
+updates:
+  # Keeps the SHA pins from rotting. Dependabot opens a PR that bumps both the
+  # SHA and the "# vX.Y.Z" comment, so every update is a reviewed diff.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # Wait a week after a release before proposing it. A compromised release is
+    # usually caught and pulled within days, so this skips the riskiest window.
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "ci"
