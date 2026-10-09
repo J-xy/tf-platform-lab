@@ -24,6 +24,8 @@ override.tf.json
 
 # Saved plan output is a binary that can contain secrets
 *.tfplan
+# CI saves plans as a bare `tfplan` (terraform.yml), so match that name too
+tfplan
 
 # The dependency lock file SHOULD be committed — do not add .terraform.lock.hcl here.
 
