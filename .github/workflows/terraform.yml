@@ -141,17 +141,36 @@ jobs:
       # -detailed-exitcode: 0 = no changes, 2 = changes present, 1 = error.
       # A plan showing drift is information, not failure, so 2 is tolerated here
       # and surfaced in the summary instead.
+      # -out=tfplan saves the exact plan shown in the summary, so the apply job
+      # can apply that plan instead of computing a new one after approval.
       - name: terraform plan
         id: plan
         working-directory: ${{ matrix.stack }}
         run: |
           set +e
-          terraform plan -input=false -no-color -lock-timeout=60s -detailed-exitcode > plan.txt 2>&1
+          terraform plan -input=false -no-color -lock-timeout=60s -detailed-exitcode -out=tfplan > plan.txt 2>&1
           code=$?
           set -e
           echo "exitcode=$code" >> "$GITHUB_OUTPUT"
           cat plan.txt
           exit $([ $code -eq 1 ] && echo 1 || echo 0)
+
+      # Hands the saved plan to the apply job. Push to main only: PR runs never
+      # apply, so there is nothing to hand over. Uploaded on exit 0 as well, so
+      # an empty plan applies cleanly and the apply job never lacks a file.
+      # Retention is one day because a saved plan holds the prior state, and
+      # artifacts on a public repo can be downloaded by any signed-in user.
+      # overwrite: a re-run of this job would otherwise fail on the existing
+      # name, and the re-run's plan is the one the re-run's approval covers.
+      - name: Upload saved plan
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.plan.outputs.exitcode != '1'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tfplan-${{ matrix.stack }}
+          path: ${{ matrix.stack }}/tfplan
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: true
 
       - name: Summarise plan
         if: always()
@@ -173,6 +192,12 @@ jobs:
   # environment. `environment: prod` is what changes the OIDC subject to
   # :environment:prod — the only subject the apply role trusts, and one the
   # plan role never accepts.
+  #
+  # The approval is bound to the plan produced earlier in this same run: the job
+  # applies the saved `tfplan` from the plan job, whose summary the reviewer
+  # read on the run page before approving. Nothing is re-planned here. If state
+  # changed after planning, `terraform apply tfplan` refuses with "Saved plan is
+  # stale", which is the intended fail-closed outcome. Do not work around it.
   apply:
     name: apply (${{ matrix.stack }})
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -211,10 +236,24 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: gha-apply-${{ github.run_id }}
 
+      # Downloading a single artifact by name extracts it directly into `path`,
+      # with no subdirectory, so the file lands at <stack>/tfplan. A missing
+      # artifact fails this step and nothing is applied.
+      - name: Download saved plan
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: tfplan-${{ matrix.stack }}
+          path: ${{ matrix.stack }}
+
       - name: terraform init
         working-directory: ${{ matrix.stack }}
         run: terraform init -input=false -no-color
 
+      # Applying a saved plan never prompts, so no -auto-approve. The explicit
+      # test makes a wrong download path fail with a clear message instead of
+      # Terraform treating `tfplan` as a missing config directory.
       - name: terraform apply
         working-directory: ${{ matrix.stack }}
-        run: terraform apply -input=false -no-color -lock-timeout=120s -auto-approve
+        run: |
+          test -f tfplan || { echo "::error::tfplan not found in ${{ matrix.stack }}/"; exit 1; }
+          terraform apply -input=false -no-color -lock-timeout=120s tfplan
