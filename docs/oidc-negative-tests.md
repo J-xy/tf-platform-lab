@@ -50,7 +50,8 @@ Both roles require `aud = sts.amazonaws.com` and an exact `sub` match
 The apply subject does not encode a branch. GitHub replaces the ref with the
 environment name whenever a job declares `environment:`, so the trust policy
 cannot tell main from a feature branch. That job falls to the `prod`
-environment's settings: deployment branches restricted to `main`, plus a
+environment's settings: deployment branches limited to protected branches
+(today that means `main`, the only branch with a protection rule), plus a
 required reviewer. Test 3 exists because of this.
 
 ## Results
@@ -60,7 +61,7 @@ required reviewer. Test 3 exists because of this.
 | 1 | Push to `neg/assume-apply`, assume apply role | `…:ref:refs/heads/neg/assume-apply` | STS denies | **Pass**: denied by STS |
 | 2 | Same branch, assume plan role | `…:ref:refs/heads/neg/assume-apply` | STS denies (plan trusts PR and main only) | **Pass**: denied by STS |
 | 3 | Feature-branch job declares `environment: prod` | none minted | GitHub refuses to start the job | **Pass**: rejected before a runner was assigned |
-| 4 | Apply job on main, approval withheld | none minted | Job waits; no token is minted | <!-- TODO --> |
+| 4 | Apply job on main, approval withheld | none minted | Job waits; no token is minted | **Pass**: held by GitHub, zero STS calls |
 
 ### Tests 1 and 2: feature branch → apply role, plan role
 
@@ -133,11 +134,41 @@ carries the `:ref:refs/heads/neg/assume-apply` subject, and none carries
 
 ### Test 4: an unapproved apply never receives credentials
 
-The evidence for this one is an absence. Record the window the job sat in
-"Waiting", then run the CloudTrail query above for that window. Zero events
-whose subject ends in `:environment:prod` means no token was ever exchanged.
+The evidence for this one is an absence, so it needs a control to show the
+query could have seen something.
 
-<!-- TODO: window + query output -->
+Merging PR #20 at 2026-10-05T22:26:07Z triggered run `37382450838`. The
+three `plan` jobs ran, and `apply (bootstrap)` (job `112007725132`) stopped
+at the `prod` gate:
+
+```
+{ "name": "apply (bootstrap)", "status": "waiting", "steps": [] }
+```
+
+GitHub's pending-deployments API showed what it was holding:
+
+```
+{ "env": "prod", "reviewers": ["J-xy"], "wait_timer": 0 }
+```
+
+The run was cancelled without approval. CloudTrail for 22:26–22:40 UTC:
+
+```
+2026-10-05T22:26:25Z  errorCode: null  …:ref:refs/heads/main
+2026-10-05T22:26:25Z  errorCode: null  …:ref:refs/heads/main
+2026-10-05T22:26:28Z  errorCode: null  …:ref:refs/heads/main
+```
+
+The three successful `:ref:refs/heads/main` events are the plan jobs
+assuming the plan role. They are the control: they prove the query covered
+the window and that CloudTrail had ingested it. No event carries
+`:environment:prod`. The apply job held a place in the queue but never got a
+runner, so it never requested a token, and STS never saw it.
+
+Gotcha found while collecting this: an empty result from a query filtered to
+`environment:prod` looks identical whether the gate held or CloudTrail hasn't
+ingested the window yet. Run it unfiltered first and confirm the plan events
+are present.
 
 ## Sep 4: the subject that didn't match the docs
 
@@ -167,8 +198,32 @@ Could not assume role with OIDC: Not authorized to perform sts:AssumeRoleWithWeb
 This is the same error the 2026-10-05 negative tests produced on purpose. On
 Sep 4 it was an accident, and it looked like a permissions problem.
 
-<!-- TODO: note whether the immutable format was GitHub's default for this
-repo or an opt-in in its OIDC subject settings. -->
+The immutable format was GitHub's default for this repo, not an opt-in.
+GitHub announced immutable subject claims on 2026-04-23 as opt-in for
+existing repositories, and made them mandatory for every repository created
+after 2026-07-15. This repo was created after that date, so its subject was
+immutable from the first run. The repo's OIDC customization confirms it:
+
+```
+gh api repos/J-xy/tf-platform-lab/actions/oidc/customization/sub
+{ "use_default": true, "use_immutable_subject": true,
+  "sub_claim_prefix": "repo:J-xy@68347443/tf-platform-lab@1355558109" }
+```
+
+The repo's creation date confirms it:
+
+```
+gh repo view J-xy/tf-platform-lab --json createdAt
+{ "createdAt": "2026-09-03T05:40:48Z" }
+```
+
+2026-09-03 is after the 2026-07-15 cutover.
+
+So the documentation was not wrong when it was written. It was stale for
+any repo created after the cutover, and most tutorials and AWS examples
+still show the name-based form. The practical lesson: a trust policy copied
+from documentation is a guess about the token's shape, and the decoded
+token is the fact.
 
 ### Why it was hard to find
 
