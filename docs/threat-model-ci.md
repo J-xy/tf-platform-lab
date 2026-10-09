@@ -23,7 +23,7 @@ flowchart LR
   subgraph GH["GitHub"]
     PR["PR branch code<br/>(untrusted)"]
     MAIN["main<br/>(reviewed)"]
-    ENV["prod environment<br/>protected branches only, 1 reviewer<br/>self-review allowed, admin bypass on"]
+    ENV["prod environment<br/>deploy branch: main only, 1 reviewer<br/>self-review allowed, admin bypass off"]
     ACT["Third-party actions<br/>(pinned to SHAs)"]
   end
   RUN["Runner<br/>holds role creds"]
@@ -132,7 +132,7 @@ Mitigation: a permissions boundary on both CI roles, and an SCP or boundary cond
 
 The `apply` job runs a fresh `terraform apply -auto-approve` after the reviewer approves **[repo]**. It does not apply the plan from the `plan` job. If state or config changes between the plan the reviewer read and the apply step running, the reviewer approved something different. Mitigation: `terraform plan -out`, upload the file as a short-retention artifact, and `terraform apply` that file. Residual: plan files can contain secrets, so retention must be short. Detection: compare the applied resource changes in CloudTrail to the plan summary for the same run.
 
-**Status: fixed by PR `bind-apply-to-plan`.** On push to `main` the `plan` job saves `tfplan` and uploads it as `tfplan-<stack>` (1-day retention), and `apply` applies that file with no re-plan; a stale plan fails closed. Residual: the saved plan is only as trustworthy as the artifact store between the two jobs, and artifacts on a public repo are downloadable by any signed-in GitHub user while they exist. Checked 2026-10-09: plans for `bootstrap`, `network` and `ci` contain 0 sensitive values, so exposure is the same non-secret state metadata the repo already discloses. Re-check if a stack gains a sensitive attribute or output.
+**Status: fixed by PR #22 (`bind-apply-to-plan`), merged 2026-10-09.** Verified the same day in run 37989176872: each of `bootstrap`, `network` and `ci` downloaded its digest-checked `tfplan-<stack>` and reported `Apply complete! Resources: 0 added, 0 changed, 0 destroyed.` with no `Plan:` line computed in the apply job. On push to `main` the `plan` job saves `tfplan` and uploads it as `tfplan-<stack>` (1-day retention), and `apply` applies that file with no re-plan; a stale plan fails closed. Residual: the saved plan is only as trustworthy as the artifact store between the two jobs, and artifacts on a public repo are downloadable by any signed-in GitHub user while they exist. Checked 2026-10-09: plans for `bootstrap`, `network` and `ci` contain 0 sensitive values, so exposure is the same non-secret state metadata the repo already discloses. Re-check if a stack gains a sensitive attribute or output.
 
 ### T8. Lock tampering by the plan role (found while writing)
 
@@ -140,10 +140,10 @@ The plan role may `PutObject` and `DeleteObject` on `*.tflock` **[repo]**. A mal
 
 ## 5. Priority
 
-0. Settings that take minutes and need no code: turn off `prod` admin bypass, switch `prod` to a custom branch policy for `main`, enable `sha_pinning_required`.
+0. **Done 2026-10-09.** Settings that take minutes and need no code: turn off `prod` admin bypass, switch `prod` to a custom branch policy for `main`, enable `sha_pinning_required`.
 1. Close F1: stop credentialed plan on unreviewed branches, or gate it. Everything in T1, T2 and T5 gets smaller. The `plan` jobs are required status checks on `main`, so this needs a design (for example a credential-free plan job that satisfies the check, with the credentialed plan running post-merge) and not a deletion.
 2. Turn on S3 data events for the state bucket. It is the only way to see T1, T5 and T8.
-3. Bind approval to the plan (T7). Small change, directly strengthens the control the apply role relies on.
+3. **Done 2026-10-09 (PR #22).** Bind approval to the plan (T7). Small change, directly strengthens the control the apply role relies on.
 4. Add a permissions boundary to both CI roles (T6).
 5. Add the credential-free policy-job checks (T1b, T4).
 
@@ -158,15 +158,16 @@ The plan role may `PutObject` and `DeleteObject` on `*.tflock` **[repo]**. A mal
 | `prod` environment settings | `gh api repos/J-xy/tf-platform-lab/environments/prod`. | **Done: see "Settings results" below.** T4 gets two new residuals. |
 | Branch protection and rulesets on `main` | `gh api repos/J-xy/tf-platform-lab/rulesets`. | **Done:** no rulesets; classic protection on `main`. |
 | Default workflow token permissions | `gh api repos/J-xy/tf-platform-lab/actions/permissions/workflow`. | **Done:** `read`, and workflows cannot approve PRs. |
-| Fork-PR approval policy | `gh api repos/J-xy/tf-platform-lab/actions/permissions/fork-pr-contributor-approval`. | Still owed. Matters because the repo is public. |
+| Fork-PR approval policy | `gh api repos/J-xy/tf-platform-lab/actions/permissions/fork-pr-contributor-approval`. | **Done 2026-10-09:** `first_time_contributors`. See "Settings results" below. |
 
-### Settings results (2026-10-09)
+### Settings results (2026-10-09, after the priority-0 changes)
 
 | Setting | Value | Effect |
 | --- | --- | --- |
-| `prod` deployment branches | "Protected branches" (`custom_branch_policies: false`) | The gate is "any branch with a protection rule", not "`main`". Safe today, but a new protection rule on any branch widens it. Prefer a custom policy naming `main`. |
+| `prod` deployment branches | Custom policy, one branch rule: `main` (`custom_branch_policies: true`). Was "Protected branches" until 2026-10-09. | Only `main` can deploy to `prod`. A new protection rule on another branch no longer widens the gate. |
 | `prod` required reviewer | J-xy only, `prevent_self_review: false` | The approver is the same person who triggered the run. Fine for a solo repo, but it means the gate stops automation, not J. |
-| `prod` admin bypass | `can_admins_bypass: true` | A stolen admin token can skip the reviewer rule. Turn off. |
+| `prod` admin bypass | `can_admins_bypass: false`. Was `true` until 2026-10-09. | An admin token can no longer skip the reviewer rule. GitHub asks for a separate approval for each `apply` matrix job, so a full deploy is three approvals. |
 | `main` protection | PR required, 0 approvals, `enforce_admins: true`, required checks `fmt`, three `plan`, `policy`, `strict: false` | The `plan` jobs are required checks, so removing credentialed plan from PRs (F1 fix) means redesigning these checks first. `strict: false` means the merged result was never planned. |
 | Default token | `read`, `can_approve_pull_request_reviews: false` | Good. Workflows can't self-approve. |
-| Allowed actions | `all`, `sha_pinning_required: false` | Every action in the repo is SHA-pinned today **[repo]**, but nothing enforces it. Turn on `sha_pinning_required`. |
+| Allowed actions | `all`, `sha_pinning_required: true`. Was `false` until 2026-10-09. | A tag or branch ref in any `uses:`, including nested actions in composite actions, now fails the run. All checks passed after enabling it. |
+| Fork-PR approval | `first_time_contributors` | A fork PR from someone who has contributed before runs workflows without approval. For a public repo, prefer `all_external_contributors`. Not changed yet. |
