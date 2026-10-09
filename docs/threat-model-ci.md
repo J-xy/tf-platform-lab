@@ -158,7 +158,7 @@ The plan role may `PutObject` and `DeleteObject` on `*.tflock` **[repo]**. A mal
 | `prod` environment settings | `gh api repos/J-xy/tf-platform-lab/environments/prod`. | **Done: see "Settings results" below.** T4 gets two new residuals. |
 | Branch protection and rulesets on `main` | `gh api repos/J-xy/tf-platform-lab/rulesets`. | **Done:** no rulesets; classic protection on `main`. |
 | Default workflow token permissions | `gh api repos/J-xy/tf-platform-lab/actions/permissions/workflow`. | **Done:** `read`, and workflows cannot approve PRs. |
-| Fork-PR approval policy | `gh api repos/J-xy/tf-platform-lab/actions/permissions/fork-pr-contributor-approval`. | **Done 2026-10-09:** `first_time_contributors`. See "Settings results" below. |
+| Fork-PR approval policy | `gh api repos/J-xy/tf-platform-lab/actions/permissions/fork-pr-contributor-approval`. | **Done 2026-10-09:** was `first_time_contributors`, now `all_external_contributors`. See "Settings results" below. |
 
 ### Settings results (2026-10-09, after the priority-0 changes)
 
@@ -170,4 +170,4 @@ The plan role may `PutObject` and `DeleteObject` on `*.tflock` **[repo]**. A mal
 | `main` protection | PR required, 0 approvals, `enforce_admins: true`, required checks `fmt`, three `plan`, `policy`, `strict: false` | The `plan` jobs are required checks, so removing credentialed plan from PRs (F1 fix) means redesigning these checks first. `strict: false` means the merged result was never planned. |
 | Default token | `read`, `can_approve_pull_request_reviews: false` | Good. Workflows can't self-approve. |
 | Allowed actions | `all`, `sha_pinning_required: true`. Was `false` until 2026-10-09. | A tag or branch ref in any `uses:`, including nested actions in composite actions, now fails the run. All checks passed after enabling it. |
-| Fork-PR approval | `first_time_contributors` | A fork PR from someone who has contributed before runs workflows without approval. For a public repo, prefer `all_external_contributors`. Not changed yet. |
+| Fork-PR approval | `all_external_contributors`. Was `first_time_contributors` until 2026-10-09. | Every fork PR from outside the repo waits for a maintainer to approve its workflow run, including from past contributors. Whether a fork run can mint an OIDC token is still unverified (section 6, F1 scope). |
