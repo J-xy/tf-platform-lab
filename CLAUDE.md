@@ -76,8 +76,13 @@ hitting the AWS API without checking with the user first.
 
 - `ci/tf_apply.tf`: role `github-actions-terraform-apply`. Trusts ONLY
   `<repo_subject>:environment:prod`. The subject has no branch in it; the
-  GitHub `prod` environment (main only, required reviewer) is part of the
-  control. Scoped policy `tf-platform-lab-ci-apply`, no AdministratorAccess.
+  GitHub `prod` environment is part of the control: deployment branches are a
+  custom policy naming `main` (not "protected branches"), admin bypass is off,
+  required reviewer J-xy, self-review allowed. Scoped policy
+  `tf-platform-lab-ci-apply`, no AdministratorAccess.
+- `apply` applies the saved `tfplan` artifact from the same run's `plan` job,
+  never a fresh plan. "Saved plan is stale" is the fail-closed path — re-run
+  the workflow, do not add a re-plan fallback.
 - Accepted risk: the role can `CreatePolicy tf-platform-lab-*` with any content
   and attach it — the allow-list blocks admin by name, not by effect.
 - Plan role is on `job-function/ViewOnlyAccess` + `tf-platform-lab-ci-plan-reads`
